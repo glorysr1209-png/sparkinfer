@@ -31,11 +31,24 @@ occupancy at decode and long-context scaling.
 | MoE (router + fused experts) | 0.6 ms | 8% |
 | Long tail (rmsnorm/residual/rope/kv-append, ~770 kernels/token) | ~3.8 ms | 51% |
 
-At batch-1 every kernel is tiny and **latency-bound** (vectorizing GEMV loads gave
-~0 — not bandwidth-bound). The remaining 1.8× is therefore a **fusion** problem
-(fewer, bigger kernels), not a single hot kernel: fuse QKV into one GEMV, fuse
-residual+RMSNorm, multiple-output-per-warp GEMV. Diminishing returns vs the first
-5 passes — llama.cpp's mul_mat_vec kernels are heavily hand-tuned.
+At batch-1 every kernel is tiny and **latency-bound**.
+
+### Pass 6 + plateau finding
+Fusing residual+RMSNorm (pass 6) gave only 133 → 134 tok/s (~1%), and vectorizing
+GEMV loads (pass 4) gave ~0. Together these show the remaining gap is **not** the
+norms/residuals or memory bandwidth — it's the **latency-bound GEMVs** at bs=1
+(Q/K/V/O projections dominate the attention block). We've hit that floor at ~1.8×.
+
+Closing it further means either deep GEMV micro-tuning (matching llama.cpp's
+`mul_mat_vec` — high effort, diminishing returns) or a different regime:
+- **long-context decode** — flash-decoding (pass 5) scales with KV length across
+  many blocks, so the gap should *narrow* at long context (the project's real
+  target: edge long-context MoE). Worth benchmarking at 8K–32K.
+- **prefill + tensor cores** — bs>1 / prompt processing is where MMA matters; the
+  current prefill is token-by-token.
+
+**Bottom line: 0.60 → 134 tok/s (223×) in 6 passes, within 1.8× of llama.cpp on
+single-stream short-context decode, hand-written kernels, verified correct.**
 
 (historical first-pass note below.)
 
