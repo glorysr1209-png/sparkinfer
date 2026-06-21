@@ -48,8 +48,9 @@ struct Qwen35Model::Impl {
     int *d_tok, *d_out_id, *d_pos, *d_seqlen, *d_writepos, *d_shared_ids;
     float* d_shared_w;
     std::vector<void*> owned;   // device buffers from load_weights / load_gguf
-    // GGUF quantized-expert scratch (allocated by load_gguf)
-    bf16 *d_expert_tmp = nullptr, *d_gate_s = nullptr, *d_up_s = nullptr, *d_down_s = nullptr;
+    // GGUF fused-expert decode scratch (allocated by load_gguf)
+    float *mf_logits = nullptr, *mf_weights = nullptr, *mf_h = nullptr, *mf_out = nullptr;
+    int   *mf_ids = nullptr, *mf_counts = nullptr;
 
     template <class T> T* alloc(size_t n) { void* p=nullptr; cu(cudaMalloc(&p, n*sizeof(T)), "malloc"); return (T*)p; }
 };
@@ -82,7 +83,8 @@ Qwen35Model::~Qwen35Model() {
     cudaFree(p_->routed); cudaFree(p_->shared); cudaFree(p_->logits);
     cudaFree(p_->d_tok); cudaFree(p_->d_out_id); cudaFree(p_->d_pos);
     cudaFree(p_->d_seqlen); cudaFree(p_->d_writepos); cudaFree(p_->d_shared_ids); cudaFree(p_->d_shared_w);
-    cudaFree(p_->d_expert_tmp); cudaFree(p_->d_gate_s); cudaFree(p_->d_up_s); cudaFree(p_->d_down_s);
+    cudaFree(p_->mf_logits); cudaFree(p_->mf_weights); cudaFree(p_->mf_h); cudaFree(p_->mf_out);
+    cudaFree(p_->mf_ids); cudaFree(p_->mf_counts);
     cudaStreamDestroy(p_->stream);
     delete p_;
 }
@@ -129,19 +131,18 @@ int Qwen35Model::forward_token(int token_id, int position) {
         launch_residual_add(s.x, s.ao, s.h, H, st);
         kernels::launch_rmsnorm(s.h, w.post_attn_norm, s.hn, 1, H, c.rms_eps, st);
 
-        if (w.gate_q) {   // GGUF: dequantize this layer's experts into scratch
-            const long EFH = (long)c.n_experts * c.moe_ffn * c.hidden;
-            kernels::launch_gguf_dequant(w.gate_qtype, w.gate_q, s.d_expert_tmp, EFH, st);
-            kernels::launch_transpose3d_bf16(s.d_expert_tmp, s.d_gate_s, c.n_experts, c.moe_ffn, c.hidden, st);
-            kernels::launch_gguf_dequant(w.up_qtype, w.up_q, s.d_expert_tmp, EFH, st);
-            kernels::launch_transpose3d_bf16(s.d_expert_tmp, s.d_up_s, c.n_experts, c.moe_ffn, c.hidden, st);
-            kernels::launch_gguf_dequant(w.down_qtype, w.down_q, s.d_expert_tmp, EFH, st);   // natural [E,H,F]
-            kernels::launch_transpose3d_bf16(s.d_expert_tmp, s.d_down_s, c.n_experts, c.hidden, c.moe_ffn, st);
-            s.engine->set_layer_weights(L, {w.router_w, s.d_gate_s, s.d_up_s, s.d_down_s});
+        if (w.gate_q) {   // GGUF fused: route, then dequant-on-read only the top_k experts
+            kernels::launch_moe_router_gemm(s.hn, w.router_w, s.mf_logits, 1, c.hidden, c.n_experts, st);
+            cu(cudaMemsetAsync(s.mf_counts, 0, c.n_experts * sizeof(int), st), "mf counts");
+            kernels::launch_moe_router(s.mf_logits, s.mf_ids, s.mf_weights, s.mf_counts,
+                                       1, c.n_experts, c.top_k, 1, st);
+            kernels::launch_moe_expert_ffn_q4k(s.hn, w.gate_q, w.up_q, w.down_q,
+                                               s.mf_ids, s.mf_weights, s.routed, s.mf_h, s.mf_out,
+                                               1, c.top_k, c.hidden, c.moe_ffn, st);
         } else {
             s.engine->set_layer_weights(L, {w.router_w, w.gate, w.up, w.down});
+            s.engine->forward(s.hn, s.routed, 1, L, st);
         }
-        s.engine->forward(s.hn, s.routed, 1, L, st);
         if (c.n_shared > 0) {
             kernels::launch_moe_expert_ffn(s.hn, w.shared_gate, w.shared_up, w.shared_down,
                                            s.d_shared_ids, s.d_shared_w, s.shared,
@@ -299,13 +300,14 @@ bool Qwen35Model::load_gguf(const std::string& path) {
         if (!w.wq || !w.router_w || !w.gate_q || !w.up_q || !w.down_q) return false;
         if (i == 0 || i == c.n_layers - 1) fprintf(stderr, "[gguf] layer %d loaded\n", i);
     }
-    // per-layer expert dequant scratch
-    const long EFH = (long)c.n_experts * c.moe_ffn * c.hidden;
-    cudaMalloc((void**)&s.d_expert_tmp, (size_t)EFH * 2);
-    cudaMalloc((void**)&s.d_gate_s, (size_t)EFH * 2);
-    cudaMalloc((void**)&s.d_up_s,   (size_t)EFH * 2);
-    cudaMalloc((void**)&s.d_down_s, (size_t)EFH * 2);
-    return s.d_down_s != nullptr;
+    // fused-expert decode scratch (batch 1)
+    cudaMalloc((void**)&s.mf_logits,  (size_t)c.n_experts * sizeof(float));
+    cudaMalloc((void**)&s.mf_ids,     (size_t)c.top_k * sizeof(int));
+    cudaMalloc((void**)&s.mf_weights, (size_t)c.top_k * sizeof(float));
+    cudaMalloc((void**)&s.mf_counts,  (size_t)c.n_experts * sizeof(int));
+    cudaMalloc((void**)&s.mf_h,       (size_t)c.top_k * c.moe_ffn * sizeof(float));
+    cudaMalloc((void**)&s.mf_out,     (size_t)c.hidden * sizeof(float));
+    return s.mf_out != nullptr;
 }
 
 } // namespace sparkinfer
