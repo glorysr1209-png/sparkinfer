@@ -1,4 +1,4 @@
-#include "blackwell/kernels/attention.h"
+#include "sparkinfer/kernels/attention.h"
 #include <cuda_bf16.h>
 
 // Flash decode for Gemma 4 GLOBAL attention layers.
@@ -26,7 +26,7 @@
 // Alternative (future): use CUTLASS warp-specialized persistent kernel (Blackwell
 //   ping-pong mainloop) to overlap K/V loads with QK dot-product across the two halves.
 
-namespace blackwell {
+namespace sparkinfer {
 namespace kernels {
 
 static constexpr int GEMMA4_GLOBAL_Q_HEADS  = 16;
@@ -169,4 +169,4 @@ void launch_flash_decode_global_hd512(
 }
 
 } // namespace kernels
-} // namespace blackwell
+} // namespace sparkinfer

@@ -1,4 +1,4 @@
-#include "blackwell/kernels/attention.h"
+#include "sparkinfer/kernels/attention.h"
 #include <cuda_bf16.h>
 
 // Flash decode for Gemma 4 LOCAL attention layers.
@@ -19,7 +19,7 @@
 //   4. KV cache is physically circular: positions wrap modulo WINDOW_SIZE.
 //      block_table maps window positions → physical blocks.
 
-namespace blackwell {
+namespace sparkinfer {
 namespace kernels {
 
 static constexpr int GEMMA4_LOCAL_GQA   = 2;
@@ -148,4 +148,4 @@ void launch_flash_decode_local_hd256(
 }
 
 } // namespace kernels
-} // namespace blackwell
+} // namespace sparkinfer

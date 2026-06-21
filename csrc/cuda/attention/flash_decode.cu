@@ -1,4 +1,4 @@
-#include "blackwell/kernels/attention.h"
+#include "sparkinfer/kernels/attention.h"
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
@@ -11,7 +11,7 @@
 //   FlashInfer (Ye et al. 2024)
 //   PagedAttention (Kwon et al. 2023)
 
-namespace blackwell {
+namespace sparkinfer {
 namespace kernels {
 
 template <typename scalar_t, int HEAD_DIM, int BLOCK_SIZE>
@@ -118,4 +118,4 @@ void launch_flash_decode(
 }
 
 } // namespace kernels
-} // namespace blackwell
+} // namespace sparkinfer

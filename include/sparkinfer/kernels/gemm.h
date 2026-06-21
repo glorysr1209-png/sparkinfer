@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 
-namespace blackwell { namespace kernels {
+namespace sparkinfer { namespace kernels {
 
 enum class GemmLayout { ROW_MAJOR, COL_MAJOR };
 enum class GemmPrecision { FP16, BF16, FP8_E4M3, INT8 };
@@ -33,4 +33,4 @@ void launch_batched_gemm(
     cudaStream_t stream = nullptr
 );
 
-}} // namespace blackwell::kernels
+}} // namespace sparkinfer::kernels

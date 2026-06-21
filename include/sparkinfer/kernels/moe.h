@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 
-namespace blackwell { namespace kernels {
+namespace sparkinfer { namespace kernels {
 
 // Grouped GEMM for MoE expert dispatch.
 // Each token is routed to top-k experts; this kernel batches the expert GEMMs
@@ -34,4 +34,4 @@ void launch_moe_router(
     cudaStream_t stream = nullptr
 );
 
-}} // namespace blackwell::kernels
+}} // namespace sparkinfer::kernels

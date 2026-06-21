@@ -1,4 +1,4 @@
-#include "blackwell/kernels/attention.h"
+#include "sparkinfer/kernels/attention.h"
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
@@ -14,7 +14,7 @@
 //   Each warp handles one Q-head; 8 warps share the same KV tile load.
 //   This amortizes shared memory bandwidth for KV across 8 consumers.
 
-namespace blackwell {
+namespace sparkinfer {
 namespace kernels {
 
 // GQA ratio hardcoded to 8 for register pressure control.
@@ -123,4 +123,4 @@ void launch_flash_decode_gqa8(
 }
 
 } // namespace kernels
-} // namespace blackwell
+} // namespace sparkinfer

@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 
-namespace blackwell { namespace kernels {
+namespace sparkinfer { namespace kernels {
 
 // Flash decode: single-token decode attention over paged KV cache.
 // q:           [num_seqs, num_heads, head_dim]  (fp16/bf16)
@@ -69,4 +69,4 @@ void launch_flash_decode_global_hd512(
     float scale, cudaStream_t stream = nullptr
 );
 
-}} // namespace blackwell::kernels
+}} // namespace sparkinfer::kernels
