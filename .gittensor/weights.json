@@ -1,0 +1,16 @@
+{
+  "_comment": "sparkinfer path-based emission weighting for SN74 / Gittensor. Sums to 1.0.",
+  "path_weights": {
+    "kernels/**": 0.42,
+    "runtime/**": 0.26,
+    "moe/**":     0.21,
+    "bench/**":   0.11
+  },
+  "scoring": {
+    "kernels/**": "frontier-delta verified speedup (XL/L/M/S/XS)",
+    "runtime/**": "frontier-delta verified speedup (XL/L/M/S/XS)",
+    "moe/**":     "frontier-delta verified speedup (XL/L/M/S/XS)",
+    "bench/**":   "code quality (AST) — measurement infra, not speed-scored"
+  },
+  "notes": "Intra-repo split for the sparkinfer monorepo. Weights are maturity-adaptive: as the runtime nears the hardware ceiling and 10x wins vanish, improvement is scored vs remaining headroom (roofline %) and weights rebalance toward the smaller buckets. 'agent' and the private 'kernel-wiki' are separate repos. Full reward model: https://github.com/gittensor-ai-lab"
+}
