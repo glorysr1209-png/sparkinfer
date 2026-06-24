@@ -311,6 +311,18 @@ bool Qwen35Model::load_gguf(const std::string& path) {
     GGUF g;
     if (!g.open(path)) return false;
 
+    // The GGUF path below loads only the routed experts (gate_q/up_q/down_q); it
+    // never populates the shared-expert weights (w.shared_gate/up/down), which
+    // stay at their nullptr initializers. forward_token launches the shared-expert
+    // FFN whenever cfg.n_shared > 0 (default 1), so a default-config GGUF load
+    // would dereference three null device pointers and crash decode. Qwen3-30B-A3B
+    // has no shared expert, so if the file carries no shared-expert tensor, force
+    // n_shared = 0 here to keep the default-config GGUF path self-consistent.
+    if (s.cfg.n_shared > 0 && !g.tensor("blk.0.ffn_gate_shexp.weight")) {
+        fprintf(stderr, "[gguf] no shared-expert tensors in file; forcing n_shared=0\n");
+        s.cfg.n_shared = 0;
+    }
+
     // upload raw quantized blocks, keep on device (for experts)
     auto dev_quant = [&](const std::string& name, int& qtype) -> const void* {
         const GGUFTensor* t = g.tensor(name);
