@@ -29,7 +29,14 @@ fi
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD)"
 
 echo ">> [1/3] build submission ($COMMIT) from source (sm_$ARCH) ..." >&2
-rm -rf "$ROOT/build"; NO_PREBUILT=1 ensure_sparkinfer "$ARCH"
+rm -rf "$ROOT/build"
+# A submission that does not compile is invalid -> clean REJECT (not an infra error). The `if !`
+# guard suppresses `set -e` for the build so we can emit a verdict instead of aborting silently.
+if ! NO_PREBUILT=1 ensure_sparkinfer "$ARCH"; then
+  echo ">> build FAILED — submission does not compile (sm_$ARCH)" >&2
+  printf 'RESULT_JSON {"commit": "%s", "tps": 0, "top1": 0, "kl": 99, "frontier_tps": %s, "label": "REJECT", "reason": "build failed (does not compile)", "pass": false}\n' "$COMMIT" "$FRONTIER"
+  exit 0
+fi
 SI_BIN="$ROOT/build/runtime"; SI_LD=""
 
 # One-time setup: download model (~17 GB) and build llama.cpp if not already cached.
