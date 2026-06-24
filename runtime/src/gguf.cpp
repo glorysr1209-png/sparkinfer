@@ -80,7 +80,20 @@ bool GGUF::open(const std::string& path) {
         else if (vt == VT_ARR) {
             uint32_t et = c.rd<uint32_t>(); uint64_t n = c.rd<uint64_t>();
             if (et == VT_STR) { for (uint64_t k = 0; k < n && c.ok; k++) c.rd_str(); }
-            else c.skip((size_t)n * scalar_size(et));
+            else {
+                // An unknown array element type (scalar_size == 0, e.g. a nested
+                // VT_ARR) would advance the cursor 0 bytes and silently desync every
+                // later key + the whole tensor table. n * es can also overflow size_t
+                // on a corrupt file, slipping past skip()'s post-hoc bounds check. Fail
+                // loudly instead — consistent with the unknown-scalar path below.
+                int es = scalar_size(et);
+                if (es == 0 || n > (c.size - c.off) / (size_t)es) {
+                    fprintf(stderr, "[gguf] bad metadata array (elem type %u, n=%llu) for %s\n",
+                            et, (unsigned long long)n, key.c_str());
+                    return false;
+                }
+                c.skip((size_t)n * (size_t)es);
+            }
         } else { fprintf(stderr, "[gguf] unknown vt %u for %s\n", vt, key.c_str()); return false; }
     }
     if (!c.ok) { fprintf(stderr, "[gguf] metadata parse error\n"); return false; }
