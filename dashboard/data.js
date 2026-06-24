@@ -111,7 +111,7 @@ window.SPARKINFER = {
         "kernels"
       ],
       "label": "REJECT",
-      "tps": 187.63,
+      "tps": 187.64,
       "delta_pct": null,
       "url": "https://github.com/gittensor-ai-lab/sparkinfer/pull/8"
     }
