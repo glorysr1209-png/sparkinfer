@@ -48,7 +48,12 @@ __global__ void flash_prefill_kernel(
     #pragma unroll
     for (int e = 0; e < ELEMS; e++) acc[e] = 0.f;
 
-    const int kv_end = causal ? min(seqlen_kv, qpos + 1) : seqlen_kv;
+    // Under causal attention a query at chunk-relative position qpos maps to
+    // absolute KV position qpos + (seqlen_kv - seqlen_q) and may attend to all
+    // keys up to and including it. Offsetting by the KV/query length difference
+    // makes chunked / prefix-cached prefill (seqlen_kv > seqlen_q) correct;
+    // when seqlen_q == seqlen_kv this reduces to qpos + 1 (full prefill, unchanged).
+    const int kv_end = causal ? min(seqlen_kv, qpos + 1 + (seqlen_kv - seqlen_q)) : seqlen_kv;
     for (int t = 0; t < kv_end; t++) {
         const size_t kv_off = (((size_t)b * seqlen_kv + t) * num_kv_heads + kv_head) * HEAD_DIM;
         float partial = 0.f;
