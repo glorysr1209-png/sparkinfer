@@ -1,0 +1,32 @@
+# Copycat detection & history
+
+A **copycat** PR re-submits substantially the same diff as an earlier PR (often an already-merged
+one) to farm credit for someone else's work. The eval bot detects and records them automatically.
+
+## How it works (`eval/pr_eval_bot.py`)
+
+- PRs are evaluated **oldest-first** (ascending PR number), so the original is always seen before
+  any copy and the earliest submitter is graded first.
+- For each PR, the bot fingerprints the diff = (changed files, normalized non-comment added lines)
+  and compares against **every earlier PR** (open, closed, or merged).
+- A PR is a **copycat** when it shares a changed file with an earlier PR **and** ≥80% of its added
+  lines already appear in that earlier PR's diff (`COPYCAT_CONTAINMENT = 0.80`). This catches literal
+  copies while leaving genuinely different fixes of the same bug alone.
+- A copycat is labeled [`copycat`](../../labels/copycat), commented (citing the original PR), and
+  **not evaluated or scored**.
+- **Two strikes → block.** The 2nd copycat by the same author auto-adds them to
+  [`blocked-contributors.txt`](./blocked-contributors.txt) with a reason (logged in
+  [`FLAGGED.md`](./FLAGGED.md)); from then on their PRs are auto-closed and never evaluated.
+
+The machine-readable log is [`copycats.json`](./copycats.json) — one entry per detected copycat
+`{pr, author, original, date}`. It is append-only and maintained by the bot.
+
+## History
+
+| date | copycat PR | author | copied from | note |
+|------|-----------|--------|-------------|------|
+| 2026-06-25 | #14 | `glorysr1209-png` | #4 (`galuis116`) | flash_prefill mask; identical 1-line diff. Account already blocked as sybil. |
+| 2026-06-25 | #9  | `glorysr1209-png` | #6 (`galuis116`) | gguf metadata desync; 7/8 added lines identical. Account already blocked as sybil. |
+
+> `glorysr1209-png` also opened #13 and #15 (same bug-clusters as #11 / #12) but with different
+> code — not literal copies, so not logged here; they were closed under the sybil block instead.

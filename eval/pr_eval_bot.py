@@ -77,6 +77,68 @@ def close_blocked_pr(repo, num, hits):
     gh(["pr", "comment", str(num), "-R", repo, "--body", body])
     return gh(["pr", "close", str(num), "-R", repo]).returncode == 0
 
+def block_account(login, reason):
+    """Append a login to the denylist file + a reason to FLAGGED.md (deduped)."""
+    cur = load_denylist()
+    if login.lower() not in cur:
+        with open(DENYLIST_FILE, "a") as f: f.write(f"\n{login}\n")
+    with open(FLAG_FILE, "a") as f:
+        f.write(f"\n## {datetime.date.today().isoformat()} — `{login}` (auto-blocked)\n\n{reason}\n")
+
+# ---- copycat detection (a later PR that re-submits an earlier PR's diff) ----
+# A PR is a copycat if its added lines are largely contained in an EARLIER PR touching the same
+# file(s). Copycats are labeled `copycat`, commented (citing the original), and NOT evaluated.
+# Logged to .github/copycats.json; a 2nd copycat by the same author auto-adds them to the denylist.
+FLAG_FILE = os.path.join(ROOT, ".github", "FLAGGED.md")
+COPYCAT_LABEL = "copycat"
+COPYCAT_LOG = os.path.join(ROOT, ".github", "copycats.json")
+COPYCAT_CONTAINMENT = 0.80   # ≥80% of the copy's added lines also appear in the original
+COPYCAT_STRIKES = 2          # this many copycats by one author -> denylist
+
+def pr_fingerprint(repo, num):
+    """(changed files, normalized non-empty added lines) from the PR's unified diff."""
+    diff = gh(["pr", "diff", str(num), "-R", repo]).stdout or ""
+    files, added = set(), set()
+    for line in diff.splitlines():
+        if line.startswith("+++ ") or line.startswith("--- "):
+            p = line[4:].strip()
+            if p.startswith(("a/", "b/")): p = p[2:]
+            if p and p != "/dev/null": files.add(p)
+        elif line.startswith("+") and not line.startswith("+++"):
+            s = line[1:].strip()
+            if s and not s.startswith(("//", "#", "/*", "*")): added.add(s)  # skip comment-only lines
+    return files, added
+
+def containment(copy_added, orig_added):
+    if not copy_added: return 0.0
+    return len(copy_added & orig_added) / len(copy_added)
+
+def load_copycat_log():
+    try: return json.load(open(COPYCAT_LOG))
+    except Exception: return []
+
+def save_copycat_log(log):
+    os.makedirs(os.path.dirname(COPYCAT_LOG), exist_ok=True)
+    with open(COPYCAT_LOG, "w") as f: json.dump(log, f, indent=2)
+
+def push_github_state(msg):
+    subprocess.run(["git", "-C", ROOT, "add", ".github/copycats.json",
+                    ".github/blocked-contributors.txt", ".github/FLAGGED.md"], capture_output=True)
+    if subprocess.run(["git", "-C", ROOT, "diff", "--cached", "--quiet"]).returncode == 0:
+        return
+    subprocess.run(["git", "-C", ROOT, "commit", "-q", "-m", msg], capture_output=True)
+    subprocess.run(["git", "-C", ROOT, "pull", "-q", "--rebase", "origin", "main"], capture_output=True)
+    subprocess.run(["git", "-C", ROOT, "push", "-q", "origin", "main"], capture_output=True)
+
+def flag_copycat(repo, num, original, author):
+    add_label(repo, num, COPYCAT_LABEL)
+    body = (f"<!-- sparkinfer-copycat -->\n## 🐈 Flagged: copycat\n\n"
+            f"This PR re-submits substantially the same diff as the earlier #{original}. "
+            f"Duplicating an existing PR's work does not earn a score — copycats are **not "
+            f"evaluated or merged**.\n\nRepeated copycatting (≥{COPYCAT_STRIKES}) results in an "
+            f"automatic block. See [`.github/COPYCATS.md`](../blob/main/.github/COPYCATS.md).")
+    gh(["pr", "comment", str(num), "-R", repo, "--body", body])
+
 def evaluated_commits(repo, num):
     r = gh(["pr", "view", str(num), "-R", repo, "--json", "comments"])
     done = set()
@@ -193,10 +255,38 @@ def main():
 
     dash = load_dash()
     frontier = dash["status"]["frontier_tps"] if dash else args.frontier   # live ledger frontier
+    # OLDEST-FIRST: evaluate ascending by PR number so the original of any duplicate is seen before
+    # its copy, and the earliest submitter is graded first (fairness + copycat attribution).
     prs = json.loads(gh(["pr", "list", "-R", args.repo, "--state", "open",
                          "--json", "number,headRefName,headRefOid,title,isCrossRepository"]).stdout or "[]")
+    prs.sort(key=lambda p: p["number"])
     if not prs:
         print("no open PRs"); return
+
+    # Fingerprint EVERY PR (open + closed + merged) so an open PR can be compared against any earlier
+    # one — copies often target already-merged originals. Built once, ascending by number.
+    all_prs = json.loads(gh(["pr", "list", "-R", args.repo, "--state", "all",
+                             "--json", "number,author", "-L", "300"]).stdout or "[]")
+    all_nums = sorted(p["number"] for p in all_prs)
+    pr_author = {p["number"]: (p.get("author") or {}).get("login", "?") for p in all_prs}
+    fps = {n: pr_fingerprint(args.repo, n) for n in all_nums}
+    copy_log = load_copycat_log()
+    logged_copycats = {e["pr"] for e in copy_log}
+    state_changed = False
+
+    def find_original(num):
+        """Earliest PR by a DIFFERENT author (shared file) whose added lines contain this PR's diff.
+        Self-resubmissions (same author iterating on their own earlier PR) are NOT copycats."""
+        files, added = fps.get(num, (set(), set()))
+        if not added: return None
+        me = pr_author.get(num, "?")
+        for earlier in all_nums:
+            if earlier >= num: break
+            if pr_author.get(earlier, "?") == me: continue   # ignore one's own earlier PRs
+            ef, ea = fps.get(earlier, (set(), set()))
+            if (files & ef) and containment(added, ea) >= COPYCAT_CONTAINMENT:
+                return earlier
+        return None
 
     # Collect PRs that actually need evaluation before starting the GPU instance.
     denylist = load_denylist()
@@ -204,12 +294,30 @@ def main():
     for pr in prs:
         num, branch, oid = pr["number"], pr["headRefName"], pr["headRefOid"][:7]
         ref = f"pull/{num}/head" if pr.get("isCrossRepository") else branch
-        # Blocked-contributor gate FIRST — never spend GPU on a flagged/sybil PR. If the PR's opener
-        # or any commit author/committer is denylisted, flag + close it and move on (no eval, no score).
+        # Gate 1 — blocked contributor: never spend GPU on a flagged/sybil PR.
         hits = pr_involved_logins(args.repo, num) & denylist
         if hits:
             print(f"PR #{num}: BLOCKED (denylisted: {', '.join(sorted(hits))}) — flag + close, no eval")
             if not args.dry_run: close_blocked_pr(args.repo, num, hits)
+            continue
+        # Gate 2 — copycat: re-submits a DIFFERENT author's earlier diff. Label, log, skip eval;
+        # 2nd strike -> block. (Self-resubmissions are excluded by find_original.)
+        original = find_original(num)
+        if original is not None:
+            author = pr_author.get(num, "?")
+            print(f"PR #{num}: COPYCAT of #{original} by {pr_author.get(original,'?')} "
+                  f"(author {author}) — flag, no eval")
+            if not args.dry_run and num not in logged_copycats:
+                flag_copycat(args.repo, num, original, author)
+                copy_log.append({"pr": num, "author": author, "original": original,
+                                 "date": datetime.date.today().isoformat()})
+                logged_copycats.add(num); state_changed = True
+                strikes = sum(1 for e in copy_log if e["author"] == author)
+                if strikes >= COPYCAT_STRIKES and author.lower() not in load_denylist():
+                    print(f"  -> {author} hit {strikes} copycats — auto-blocking")
+                    block_account(author, f"Auto-blocked after {strikes} copycat PRs "
+                                  f"(#{', #'.join(str(e['pr']) for e in copy_log if e['author']==author)}).")
+                    close_blocked_pr(args.repo, num, {author})
             continue
         areas = areas_for_pr(args.repo, num)
         print(f"PR #{num} @ {oid}: areas={sorted(areas) or ['(none)']} ref={ref}")
@@ -218,8 +326,16 @@ def main():
             print(f"PR #{num} @ {oid}: already evaluated — skip eval"); continue
         pending.append((pr, num, branch, oid, ref, areas))
 
+    if not args.dry_run and state_changed:
+        save_copycat_log(copy_log)
+        push_github_state("eval: record copycat detections + any auto-blocks")
+
     if not pending:
         print("done — no merges (manual)."); return
+
+    if args.dry_run:
+        print("--- dry-run: would evaluate (oldest-first): " +
+              ", ".join(f"#{n}" for _, n, *_ in pending)); return
 
     # Run all pending evals on the SAME instance: pass --keep so vast_eval.py never stops/destroys
     # the box mid-queue. The bot stops the instance once after ALL PRs finish (or if the instance
