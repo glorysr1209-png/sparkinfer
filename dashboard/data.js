@@ -4,12 +4,12 @@ window.SPARKINFER = {
   "status": {
     "gpu": "RTX 5090 · sm_120 · CUDA 13",
     "model": "Qwen3-30B-A3B · Q4_K_M",
-    "frontier_tps": 279.11,
+    "frontier_tps": 285.32,
     "ref_name": "llama.cpp",
     "ref_tps": 365.73,
     "vram_gb": 21.4,
-    "token_match": 0.99,
-    "kl": 0.1473
+    "token_match": 0.96,
+    "kl": 0.1431
   },
   "passes_gpu": "RTX PRO 6000",
   "passes": [
@@ -82,6 +82,18 @@ window.SPARKINFER = {
     }
   ],
   "prs": [
+    {
+      "num": 63,
+      "title": "Parallelize flash-decode combine + n_splits=32 (+2.7% decode)",
+      "areas": [
+        "kernels",
+        "runtime"
+      ],
+      "label": "M",
+      "tps": 285.32,
+      "delta_pct": 2.2,
+      "url": "https://github.com/gittensor-ai-lab/sparkinfer/pull/63"
+    },
     {
       "num": 60,
       "title": "perf(runtime): keep lm_head native-quantized, decode on-read (cut the largest decode read)",
@@ -424,6 +436,12 @@ window.SPARKINFER = {
       "name": "Adopt llama.cpp Q4_K mul_mat",
       "tps": 279.11,
       "pr": 59,
+      "date": "2026-06-26"
+    },
+    {
+      "name": "Parallelize flash-decode com",
+      "tps": 285.32,
+      "pr": 63,
       "date": "2026-06-26"
     }
   ]
